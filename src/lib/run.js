@@ -137,23 +137,39 @@ async function run(
 	next();
 
 	async function next() {
-		if (extension === ".js" || isConsole) startConsole();
-		else {
+		if (extension === ".js" || isConsole) {
+			console.log("[Run] JS file or console detected, starting console");
+			startConsole();
+		} else {
 			// Check if this is an executable project (Node.js, Python, etc.)
+			console.log(
+				`[Run] Checking if executable: filename=${filename}, pathName=${pathName}, extension=${extension}`,
+			);
 			const projectInfo = await runExecutor.detectExecutableProject(
 				filename,
 				pathName,
 			);
+			console.log(`[Run] detectExecutableProject returned:`, projectInfo);
 			if (projectInfo.type) {
 				// Route to executor instead of static server
+				console.log(
+					`[Run] Routing to runWithExecutor for type: ${projectInfo.type}`,
+				);
 				const success = await runExecutor.runWithExecutor(
 					projectInfo,
 					pathName,
 					openBrowser,
 				);
-				if (success) return;
+				if (success) {
+					console.log("[Run] Project execution started successfully");
+					return;
+				}
 				// Fall back to static server if execution failed
+				console.log(
+					"[Run] Project execution failed, falling back to static server",
+				);
 			}
+			console.log("[Run] Starting static server");
 			start();
 		}
 	}

@@ -22,10 +22,19 @@ function getBackgroundExecutor() {
  * Detect if the current project is executable (Node.js, Python, etc.)
  * @param {string} activeFilePath - Path to the active file
  * @param {string} folderPath - Path to the containing folder
- * @returns {Promise<{type: 'node'|'python'|null, details: any}>}
+ * @returns {Promise<{type: 'node'|'python'|'script'|null, details: any}>}
  */
 async function detectExecutableProject(activeFilePath, folderPath) {
-	if (!folderPath) return { type: null, details: null };
+	console.log(
+		`[detectExecutableProject] Input: activeFilePath=${activeFilePath}, folderPath=${folderPath}`,
+	);
+
+	if (!folderPath) {
+		console.log(
+			"[detectExecutableProject] No folderPath provided, returning null",
+		);
+		return { type: null, details: null };
+	}
 
 	try {
 		// Check for package.json (Node.js project)
@@ -36,6 +45,9 @@ async function detectExecutableProject(activeFilePath, folderPath) {
 			try {
 				const content = await fs.readFile("utf-8");
 				const packageJson = JSON.parse(content);
+				console.log(
+					"[detectExecutableProject] Found Node.js project (package.json)",
+				);
 				return {
 					type: "node",
 					details: {
@@ -44,13 +56,20 @@ async function detectExecutableProject(activeFilePath, folderPath) {
 					},
 				};
 			} catch (error) {
-				console.error("Failed to parse package.json:", error);
+				console.error(
+					"[detectExecutableProject] Failed to parse package.json:",
+					error,
+				);
 			}
 		}
 
 		// Check for Python files
 		const ext = Url.extname(activeFilePath || "");
 		if (ext === ".py") {
+			console.log(
+				"[detectExecutableProject] Detected Python file:",
+				activeFilePath,
+			);
 			return {
 				type: "python",
 				details: {
@@ -71,6 +90,12 @@ async function detectExecutableProject(activeFilePath, folderPath) {
 			".lua",
 		];
 		if (interpretedExts.includes(ext)) {
+			console.log(
+				"[detectExecutableProject] Detected script file:",
+				activeFilePath,
+				"ext:",
+				ext,
+			);
 			return {
 				type: "script",
 				details: {
@@ -80,9 +105,10 @@ async function detectExecutableProject(activeFilePath, folderPath) {
 			};
 		}
 	} catch (error) {
-		console.error("Error detecting executable project:", error);
+		console.error("[detectExecutableProject] Error:", error);
 	}
 
+	console.log("[detectExecutableProject] No executable project detected");
 	return { type: null, details: null };
 }
 

@@ -7,6 +7,17 @@ import loader from "dialogs/loader";
 import helpers from "utils/helpers";
 import Url from "utils/Url";
 
+// Get the BackgroundExecutor to isolate from Terminal's foreground executor
+// This prevents interference with the terminal service lifecycle
+let backgroundExecutor = null;
+function getBackgroundExecutor() {
+	if (backgroundExecutor) return backgroundExecutor;
+	if (typeof Executor !== "undefined" && Executor.BackgroundExecutor) {
+		backgroundExecutor = Executor.BackgroundExecutor;
+	}
+	return backgroundExecutor;
+}
+
 /**
  * Detect if the current project is executable (Node.js, Python, etc.)
  * @param {string} activeFilePath - Path to the active file
@@ -100,11 +111,12 @@ function getInterpreterForExt(ext) {
  * @returns {Promise<boolean>}
  */
 async function checkInterpreterAvailable(interpreter) {
-	if (typeof Executor === "undefined") return false;
+	const executor = getBackgroundExecutor();
+	if (!executor) return false;
 
 	try {
 		const whichCmd = `which ${interpreter}`;
-		const result = await Executor.execute(whichCmd, true);
+		const result = await executor.execute(whichCmd, true);
 		return result.trim().length > 0;
 	} catch (error) {
 		console.error(`Failed to check for ${interpreter}:`, error);
@@ -118,13 +130,14 @@ async function checkInterpreterAvailable(interpreter) {
  * @returns {Promise<boolean>}
  */
 async function installInterpreter(interpreter) {
-	if (typeof Executor === "undefined") return false;
+	const executor = getBackgroundExecutor();
+	if (!executor) return false;
 
 	const loaderInstance = loader.create("Installing interpreter...");
 
 	try {
 		const installCmd = `apk add ${interpreter}`;
-		const result = await Executor.execute(installCmd, true);
+		const result = await executor.execute(installCmd, true);
 		loaderInstance.destroy();
 		return result.includes("OK") || !result.includes("ERROR");
 	} catch (error) {
@@ -250,7 +263,8 @@ async function createTerminalPage(processId, projectName) {
  * @returns {Promise<boolean>} Success status
  */
 export async function runWithExecutor(projectInfo, folderPath, openBrowser) {
-	if (typeof Executor === "undefined") {
+	const executor = getBackgroundExecutor();
+	if (!executor) {
 		alert(
 			"Terminal plugin not available",
 			"The Terminal plugin is required to run executable projects. Please ensure the Terminal plugin is installed and enabled.",
@@ -336,7 +350,7 @@ export async function runWithExecutor(projectInfo, folderPath, openBrowser) {
 		let processId;
 		let localhostUrl = null;
 
-		processId = await Executor.start(
+		processId = await executor.start(
 			fullCommand,
 			(type, data) => {
 				loaderInstance.destroy();

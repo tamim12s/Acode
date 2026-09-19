@@ -1,0 +1,102 @@
+name: Debug APK Build
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  STORE_FILE_PATH: /tmp/app-debug.keystore
+  BUILD_JSON_PATH: build.json
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    outputs:
+      updated_version: ${{ steps.version.outputs.updated_version }}
+      git_commit: ${{ steps.meta.outputs.git_commit }}
+      apk_artifact_name: ${{ steps.meta.outputs.apk_artifact_name }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "lts/*"
+          cache: npm
+
+      - name: Compute metadata
+        id: meta
+        run: |
+          GIT_COMMIT="$(git rev-parse HEAD)"
+          echo "git_commit=$GIT_COMMIT" >> "$GITHUB_OUTPUT"
+          echo "apk_artifact_name=acode-debug-$GIT_COMMIT" >> "$GITHUB_OUTPUT"
+
+      - name: Extract base version
+        id: base
+        run: |
+          VERSION=$(grep -oP 'version="\K[0-9.]+' config.xml)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Compose build version
+        id: version
+        run: |
+          SHORT="$(echo "${{ steps.meta.outputs.git_commit }}" | cut -c1-7)"
+          UPDATED="${{ steps.base.outputs.version }}-debug.$SHORT"
+          sed -i "s/version=\"${{ steps.base.outputs.version }}\"/version=\"$UPDATED\"/g" config.xml
+          echo "updated_version=$UPDATED" >> "$GITHUB_OUTPUT"
+          echo "APK_PATH=/tmp/acode-debug-$UPDATED.apk" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        run: |
+          npm install
+          npm install -g cordova
+          npm run setup
+
+      - name: Build debug APK
+        run: |
+          node utils/storage_manager.mjs y
+          npm run build paid dev apk
+          mv platforms/android/app/build/outputs/apk/debug/app-debug.apk ${{ env.APK_PATH }}
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.meta.outputs.apk_artifact_name }}
+          path: ${{ env.APK_PATH }}
+          retention-days: 30
+
+      - name: Compute SHA256
+        id: sha256
+        run: |
+          echo "apk_sha256=$(sha256sum ${{ env.APK_PATH }} | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+      - name: Build summary
+        run: |
+          echo "## 🏗️ Debug APK Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Key | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "| --- | ----- |" >> $GITHUB_STEP_SUMMARY
+          echo "| Build Version | ${{ steps.version.outputs.updated_version }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Git Commit | ${{ steps.meta.outputs.git_commit }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| APK Artifact | ${{ steps.meta.outputs.apk_artifact_name }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| SHA256 | ${{ steps.sha256.outputs.apk_sha256 }} |" >> $GITHUB_STEP_SUMMARY

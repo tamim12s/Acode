@@ -1323,7 +1323,12 @@ export default class EditorFile {
 			}
 
 			const runnableFile = /\.((html?)|(md)|(js)|(svg))$/;
-			if (runnableFile.test(this.filename)) {
+			// Also recognize executable scripts (Python, Ruby, PHP, etc.)
+			const executableFile = /\.((py)|(rb)|(php)|(pl)|(lua)|(ts)|(tsx))$/;
+			if (
+				runnableFile.test(this.filename) ||
+				executableFile.test(this.filename)
+			) {
 				this.#canRun = Promise.resolve(true);
 				return;
 			}

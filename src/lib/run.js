@@ -17,6 +17,7 @@ import $_markdown from "views/markdown.hbs";
 import config from "./config";
 import EditorFile from "./editorFile";
 import openFolder from "./openFolder";
+import runExecutor from "./runExecutor";
 import appSettings from "./settings";
 
 /**@type {Server} */
@@ -135,9 +136,26 @@ async function run(
 
 	next();
 
-	function next() {
+	async function next() {
 		if (extension === ".js" || isConsole) startConsole();
-		else start();
+		else {
+			// Check if this is an executable project (Node.js, Python, etc.)
+			const projectInfo = await runExecutor.detectExecutableProject(
+				filename,
+				pathName,
+			);
+			if (projectInfo.type) {
+				// Route to executor instead of static server
+				const success = await runExecutor.runWithExecutor(
+					projectInfo,
+					pathName,
+					openBrowser,
+				);
+				if (success) return;
+				// Fall back to static server if execution failed
+			}
+			start();
+		}
 	}
 
 	function startConsole() {

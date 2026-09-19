@@ -3,6 +3,7 @@ import Url from "utils/Url";
 import confirm from "dialogs/confirm";
 import toast from "components/toast";
 import browser from "plugins/browser";
+import terminalManager from "components/terminal/terminalManager";
 
 const INTERPRETED = {
   py: { cmd: (f) => `python3 "${f}"`, check: "which python3", install: "apk add --no-cache python3" },
@@ -79,9 +80,42 @@ export async function runWithExecutor(descriptor) {
     ? `cd "${descriptor.cwd}" && ${descriptor.command}`
     : descriptor.command;
 
+  // Create a terminal session for visible output
+  let terminalInstance = null;
+  try {
+    const projectName = descriptor.type === "node"
+      ? `Node.js (${descriptor.cwd ? Url.basename(descriptor.cwd) : "project"})`
+      : `${descriptor.type.toUpperCase()} Script`;
+
+    terminalInstance = await terminalManager.createLocalTerminal({
+      name: projectName,
+      render: true,
+      serverMode: false,
+    });
+
+    terminalInstance.component.write(`\x1b[36m[${new Date().toLocaleTimeString()}]\x1b[0m Running: ${fullCommand}\r\n\r\n`);
+  } catch (err) {
+    console.error("[runExecutor] failed to create terminal", err);
+  }
+
   let opened = false;
+  let exitCode = null;
+
   const uuid = await executor.start(fullCommand, (type, data) => {
     console.log("[runExecutor:output]", type, data);
+
+    // Write to terminal if available
+    if (terminalInstance?.component) {
+      if (type === "stdout" || type === "stderr") {
+        const color = type === "stderr" ? "\x1b[91m" : "\x1b[0m";
+        terminalInstance.component.write(`${color}${data}\x1b[0m`);
+      } else if (type === "exit") {
+        exitCode = data;
+        terminalInstance.component.write(`\r\n\x1b[33m[Exit code: ${data}]\x1b[0m\r\n`);
+      }
+    }
+
+    // Auto-open browser on localhost URL
     if (!opened && type === "stdout") {
       const m = data.match(/localhost:(\d+)/);
       if (m) {

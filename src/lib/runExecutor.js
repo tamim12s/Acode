@@ -15,6 +15,9 @@ const INTERPRETED = {
 
 const NODE_INFO = { check: "which node", install: "apk add --no-cache nodejs npm" };
 
+// Track terminal instances and running processes per file path
+const terminalsByPath = new Map(); // path -> { terminal, uuid }
+
 export async function detectExecutableProject(activeFile, pathName) {
   console.log("[runExecutor] checking", activeFile?.filename, pathName);
   if (!activeFile) return null;
@@ -76,26 +79,58 @@ export async function runWithExecutor(descriptor) {
     }
   }
 
-  const fullCommand = descriptor.cwd
-    ? `cd "${descriptor.cwd}" && ${descriptor.command}`
+  // Strip file:// prefix from paths for Alpine sandbox
+  const cleanPath = (p) => p ? p.replace(/^file:\/\//, "") : p;
+  const cleanCwd = cleanPath(descriptor.cwd);
+
+  const fullCommand = cleanCwd
+    ? `cd "${cleanCwd}" && ${descriptor.command}`
     : descriptor.command;
 
-  // Create a terminal session for visible output
+  // Generate a key for this file/project: use clean path for consistent terminal reuse
+  const fileKey = cleanCwd ? `file://${cleanCwd}` : `exec://${descriptor.type}`;
+
+  // Check for existing terminal for this file
   let terminalInstance = null;
-  try {
-    const projectName = descriptor.type === "node"
-      ? `Node.js (${descriptor.cwd ? Url.basename(descriptor.cwd) : "project"})`
-      : `${descriptor.type.toUpperCase()} Script`;
+  const existingTerminal = terminalsByPath.get(fileKey);
+  const executorInstance = executor; // capture for nested callbacks
 
-    terminalInstance = await terminalManager.createLocalTerminal({
-      name: projectName,
-      render: true,
-      serverMode: false,
-    });
+  if (existingTerminal?.terminal) {
+    console.log("[runExecutor] reusing existing terminal for", fileKey);
+    terminalInstance = existingTerminal.terminal;
 
-    terminalInstance.component.write(`\x1b[36m[${new Date().toLocaleTimeString()}]\x1b[0m Running: ${fullCommand}\r\n\r\n`);
-  } catch (err) {
-    console.error("[runExecutor] failed to create terminal", err);
+    // Stop previous process if it's still running
+    if (existingTerminal.uuid && typeof executorInstance.stop === "function") {
+      console.log("[runExecutor] stopping previous process", existingTerminal.uuid);
+      try {
+        await executorInstance.stop(existingTerminal.uuid);
+      } catch (err) {
+        console.log("[runExecutor] could not stop previous process", err);
+      }
+    }
+
+    // Clear or add separator to the existing terminal
+    terminalInstance.component.write(`\r\n\x1b[36m[${new Date().toLocaleTimeString()}]\x1b[0m Running: ${fullCommand}\r\n\r\n`);
+  } else {
+    // Create a new terminal session for visible output
+    try {
+      const projectName = descriptor.type === "node"
+        ? `Node.js (${cleanCwd ? Url.basename(cleanCwd) : "project"})`
+        : `${descriptor.type.toUpperCase()} Script`;
+
+      terminalInstance = await terminalManager.createLocalTerminal({
+        name: projectName,
+        render: true,
+        serverMode: false,
+      });
+
+      terminalInstance.component.write(`\x1b[36m[${new Date().toLocaleTimeString()}]\x1b[0m Running: ${fullCommand}\r\n\r\n`);
+
+      // Track this new terminal
+      terminalsByPath.set(fileKey, { terminal: terminalInstance, uuid: null });
+    } catch (err) {
+      console.error("[runExecutor] failed to create terminal", err);
+    }
   }
 
   let opened = false;
@@ -112,6 +147,11 @@ export async function runWithExecutor(descriptor) {
       } else if (type === "exit") {
         exitCode = data;
         terminalInstance.component.write(`\r\n\x1b[33m[Exit code: ${data}]\x1b[0m\r\n`);
+        // Clear the stored UUID when process exits
+        const stored = terminalsByPath.get(fileKey);
+        if (stored?.uuid === uuid) {
+          terminalsByPath.set(fileKey, { terminal: terminalInstance, uuid: null });
+        }
       }
     }
 
@@ -126,6 +166,13 @@ export async function runWithExecutor(descriptor) {
   }, true);
 
   console.log("[runExecutor] started uuid", uuid);
+
+  // Update stored terminal with new process UUID
+  const stored = terminalsByPath.get(fileKey);
+  if (stored && terminalInstance) {
+    terminalsByPath.set(fileKey, { terminal: terminalInstance, uuid });
+  }
+
   toast("Running...");
   return uuid;
 }

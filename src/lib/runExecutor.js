@@ -3,7 +3,9 @@ import Url from "utils/Url";
 import confirm from "dialogs/confirm";
 import toast from "components/toast";
 import browser from "plugins/browser";
-import terminalManager from "components/terminal/terminalManager";
+import runOutputPanel from "components/runOutputPanel";
+
+const cleanPath = (p) => (p ? p.replace(/^file:\/\//, "") : p);
 
 const INTERPRETED = {
   py: { cmd: (f) => `python3 "${f}"`, check: "which python3", install: "apk add --no-cache python3" },
@@ -11,12 +13,25 @@ const INTERPRETED = {
   php: { cmd: (f) => `php "${f}"`, check: "which php", install: "apk add --no-cache php" },
   pl: { cmd: (f) => `perl "${f}"`, check: "which perl", install: "apk add --no-cache perl" },
   lua: { cmd: (f) => `lua5.3 "${f}"`, check: "which lua5.3", install: "apk add --no-cache lua5.3" },
+  sh: { cmd: (f) => `bash "${f}"`, check: "which bash", install: "apk add --no-cache bash" },
+  c: { cmd: (f) => `gcc "${f}" -o /tmp/a.out && /tmp/a.out`, check: "which gcc", install: "apk add --no-cache build-base" },
+  cpp: { cmd: (f) => `g++ "${f}" -o /tmp/a.out && /tmp/a.out`, check: "which g++", install: "apk add --no-cache build-base" },
+  go: { cmd: (f) => `go run "${f}"`, check: "which go", install: "apk add --no-cache go" },
+  rs: { cmd: (f) => `rustc "${f}" -o /tmp/a.out && /tmp/a.out`, check: "which rustc", install: "apk add --no-cache rust" },
+  java: {
+    cmd: (f) => {
+      const className = f.replace(/\.java$/, "").split("/").pop();
+      return `javac "${f}" && java "${className}"`;
+    },
+    check: "which javac",
+    install: "apk add --no-cache openjdk11",
+  },
+  ts: { cmd: (f) => `ts-node "${f}"`, check: "which ts-node", install: "apk add --no-cache nodejs npm && npm install -g ts-node" },
 };
 
 const NODE_INFO = { check: "which node", install: "apk add --no-cache nodejs npm" };
 
-// Track terminal instances and running processes per file path
-const terminalsByPath = new Map(); // path -> { terminal, uuid }
+let currentRunUuid = null;
 
 export async function detectExecutableProject(activeFile, pathName) {
   console.log("[runExecutor] checking", activeFile?.filename, pathName);
@@ -79,99 +94,43 @@ export async function runWithExecutor(descriptor) {
     }
   }
 
-  // Strip file:// prefix from paths for Alpine sandbox
-  const cleanPath = (p) => p ? p.replace(/^file:\/\//, "") : p;
-  const cleanCwd = cleanPath(descriptor.cwd);
-
-  const fullCommand = cleanCwd
-    ? `cd "${cleanCwd}" && ${descriptor.command}`
+  const fullCommand = descriptor.cwd
+    ? `cd "${cleanPath(descriptor.cwd)}" && ${descriptor.command}`
     : descriptor.command;
 
-  // Generate a key for this file/project: use clean path for consistent terminal reuse
-  const fileKey = cleanCwd ? `file://${cleanCwd}` : `exec://${descriptor.type}`;
-
-  // Check for existing terminal for this file
-  let terminalInstance = null;
-  const existingTerminal = terminalsByPath.get(fileKey);
-  const executorInstance = executor; // capture for nested callbacks
-
-  if (existingTerminal?.terminal) {
-    console.log("[runExecutor] reusing existing terminal for", fileKey);
-    terminalInstance = existingTerminal.terminal;
-
-    // Stop previous process if it's still running
-    if (existingTerminal.uuid && typeof executorInstance.stop === "function") {
-      console.log("[runExecutor] stopping previous process", existingTerminal.uuid);
-      try {
-        await executorInstance.stop(existingTerminal.uuid);
-      } catch (err) {
-        console.log("[runExecutor] could not stop previous process", err);
-      }
-    }
-
-    // Clear or add separator to the existing terminal
-    terminalInstance.component.write(`\r\n\x1b[36m[${new Date().toLocaleTimeString()}]\x1b[0m Running: ${fullCommand}\r\n\r\n`);
-  } else {
-    // Create a new terminal session for visible output
+  if (currentRunUuid) {
     try {
-      const projectName = descriptor.type === "node"
-        ? `Node.js (${cleanCwd ? Url.basename(cleanCwd) : "project"})`
-        : `${descriptor.type.toUpperCase()} Script`;
-
-      terminalInstance = await terminalManager.createLocalTerminal({
-        name: projectName,
-        render: true,
-        serverMode: false,
-      });
-
-      terminalInstance.component.write(`\x1b[36m[${new Date().toLocaleTimeString()}]\x1b[0m Running: ${fullCommand}\r\n\r\n`);
-
-      // Track this new terminal
-      terminalsByPath.set(fileKey, { terminal: terminalInstance, uuid: null });
+      await executor.stop(currentRunUuid);
     } catch (err) {
-      console.error("[runExecutor] failed to create terminal", err);
+      console.log("[runExecutor] could not stop previous process", err);
     }
+    currentRunUuid = null;
   }
 
-  let opened = false;
-  let exitCode = null;
+  runOutputPanel.show(fullCommand);
+
+  let urlOpened = false;
 
   const uuid = await executor.start(fullCommand, (type, data) => {
     console.log("[runExecutor:output]", type, data);
 
-    // Write to terminal if available
-    if (terminalInstance?.component) {
-      if (type === "stdout" || type === "stderr") {
-        const color = type === "stderr" ? "\x1b[91m" : "\x1b[0m";
-        terminalInstance.component.write(`${color}${data}\x1b[0m`);
-      } else if (type === "exit") {
-        exitCode = data;
-        terminalInstance.component.write(`\r\n\x1b[33m[Exit code: ${data}]\x1b[0m\r\n`);
-        // Clear the stored UUID when process exits
-        const stored = terminalsByPath.get(fileKey);
-        if (stored?.uuid === uuid) {
-          terminalsByPath.set(fileKey, { terminal: terminalInstance, uuid: null });
-        }
-      }
+    if (type === "stdout" || type === "stderr") {
+      runOutputPanel.appendLine(type === "stderr" ? "stderr" : "stdout", data);
+    } else if (type === "exit") {
+      runOutputPanel.appendLine("exit", `[Exit code: ${data}]`);
+      currentRunUuid = null;
     }
 
-    // Auto-open browser on localhost URL
-    if (!opened && type === "stdout") {
+    if (!urlOpened && type === "stdout") {
       const m = data.match(/localhost:(\d+)/);
       if (m) {
-        opened = true;
+        urlOpened = true;
         browser.open(`http://localhost:${m[1]}`);
       }
     }
   }, true);
 
-  console.log("[runExecutor] started uuid", uuid);
-
-  // Update stored terminal with new process UUID
-  const stored = terminalsByPath.get(fileKey);
-  if (stored && terminalInstance) {
-    terminalsByPath.set(fileKey, { terminal: terminalInstance, uuid });
-  }
+  currentRunUuid = uuid;
 
   toast("Running...");
   return uuid;
